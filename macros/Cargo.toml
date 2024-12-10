@@ -6,10 +6,10 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
-proc-macro2 = {version = "1", default-features = false}
-quote = "1"
+proc-macro2 = {workspace = true, default-features = false}
+quote.workspace = true
 run-test.workspace = true
-syn = "2"
+syn.workspace = true
 
 [lib]
 proc-macro = true
