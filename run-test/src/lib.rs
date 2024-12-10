@@ -14,9 +14,6 @@ pub enum Error {
     #[error("database not found for an open connection pool")]
     DatabaseNotFound,
 
-    #[error("'postgres' database can not act as a template")]
-    InvalidTemplate,
-
     #[error("sqlx error: '{0}'")]
     Sqlx(#[from] sqlx::Error),
 }
@@ -74,7 +71,7 @@ pub async fn spawn_test_pool(
 ) -> Result<Pool<Postgres>, Error> {
     let connect_options = connect_options.clone().database(db_name);
     let pool = PgPoolOptions::new()
-        .max_connections(max_connections.unwrap_or(1))
+        .max_connections(max_connections.unwrap_or(2))
         .idle_timeout(Some(std::time::Duration::from_secs(1)))
         .connect_with(connect_options)
         .await?;
@@ -118,29 +115,33 @@ where
     // Try to get template database name from args, defaulting to connection database name
     let connect_opts = PgConnectOptions::from_str(&database_url)?;
 
+    // Get template name from args or use database name from connection options
     let template_name = &args
         .template_name
         .map(Ok)
         .unwrap_or_else(|| db_name_of_test_pool(&connect_opts))?;
 
-    if connect_opts.get_database() == Some("postgres") {
-        return Err(Error::InvalidTemplate);
-    }
+    // Service connection == default database (postgres, username, etc)
+    let service_connect_opts = connect_opts.clone().database("");
 
-    let conn = PgConnection::connect_with(&connect_opts).await.unwrap();
+    // Create a new database from the template
+    let conn = PgConnection::connect_with(&service_connect_opts)
+        .await
+        .unwrap();
     let (db_name, conn) = create_db_from_template(conn, template_name, &args.module_path)
         .await
         .unwrap();
     conn.close().await?;
 
-    let pool = spawn_test_pool(&connect_opts, &db_name, args.max_connections).await?;
+    // Run test
+    let pool = spawn_test_pool(&service_connect_opts, &db_name, args.max_connections).await?;
 
     f(pool.clone()).await;
 
-    let mut conn = PgConnection::connect_with(&connect_opts).await?;
+    // Close the pool & drop the test database
+    let mut conn = PgConnection::connect_with(&service_connect_opts).await?;
     close_test_pool(&mut conn, &pool).await.unwrap();
     conn.close().await?;
-    drop(pool);
 
     Ok(())
 }

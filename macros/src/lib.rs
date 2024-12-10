@@ -83,13 +83,15 @@ fn expand_with_args(input: syn::ItemFn, args: Args) -> Result<TokenStream> {
 
     let template_name = match args.template_name {
         None => quote! { None },
-        Some(name) => quote! { Some(#name) },
+        Some(name) => quote! { Some(#name.to_string()) },
     };
 
     let max_connections = match args.max_connections {
         None => quote! { None },
         Some(mc) => quote! { Some(#mc) },
     };
+
+    let name_str = name.to_string();
 
     Ok(quote! {
         #(#attrs)*
@@ -102,7 +104,7 @@ fn expand_with_args(input: syn::ItemFn, args: Args) -> Result<TokenStream> {
             let test_args = ::sqlx_pg_test_template::TestArgs {
                 template_name: #template_name,
                 max_connections: #max_connections,
-                module_path: module_path!().to_string(),
+                module_path: format!("{}::{}", module_path!().to_string(), #name_str),
             };
 
             sqlx_pg_test_template::run_test(#name, test_args)
