@@ -9,7 +9,7 @@ edition = "2021"
 homepage = "https://github.com/gzigzigzeo/sqlx-pg-test-template"
 license = "MIT"
 repository = "https://github.com/gzigzigzeo/sqlx-pg-test-template"
-version = "0.1.0"
+version = "0.1.1"
 
 [workspace.dependencies]
 proc-macro2 = {version = "1", default-features = false}
