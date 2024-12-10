@@ -1,0 +1,13 @@
+[package]
+authors.workspace = true
+edition.workspace = true
+name = "tests"
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+sqlx-pg-test-template = {path = ".."}
+
+[dev-dependencies]
+sqlx = {version = ">= 0.8", features = ["migrate", "postgres", "runtime-tokio"]}
+tokio = {version = "1", features = ["full"]}
