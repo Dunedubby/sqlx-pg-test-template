@@ -4,8 +4,10 @@ resolver = "2"
 
 [workspace.package]
 authors = ["Viktor Sokolov"]
+description = "Faster version of #[sqlx-test] macro for PostgreSQL"
 edition = "2021"
-name = "sqlx-pg-test-template"
+homepage = "https://github.com/gzigzigzeo/sqlx-pg-test-template"
+license = "MIT"
 repository = "https://github.com/gzigzigzeo/sqlx-pg-test-template"
 version = "0.1.0"
 
@@ -21,7 +23,10 @@ tokio = {version = "1", features = ["full"]}
 
 [package]
 authors.workspace = true
+description.workspace = true
 edition.workspace = true
+homepage.workspace = true
+license.workspace = true
 name = "sqlx-pg-test-template"
 repository.workspace = true
 version.workspace = true
