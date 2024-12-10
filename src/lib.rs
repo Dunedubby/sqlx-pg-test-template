@@ -88,10 +88,10 @@
 //! WHERE
 //!     sd.description ILIKE '%test%';
 //! ```
-pub use macros::test;
+pub use sqlx_pg_test_template_macros::test;
 
 #[doc(hidden)]
-pub use run_test::TestArgs;
+pub use sqlx_pg_test_template_runner::TestArgs;
 
 #[doc(hidden)]
-pub use run_test::run_test;
+pub use sqlx_pg_test_template_runner::run_test;

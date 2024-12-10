@@ -678,16 +678,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7a70ba024b9dc04c27ea2f0c0548feb474ec5c54bba33a7f72f873a39d07b24"
 
 [[package]]
-name = "macros"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "run-test",
- "syn",
-]
-
-[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -974,14 +964,6 @@ dependencies = [
  "spki",
  "subtle",
  "zeroize",
-]
-
-[[package]]
-name = "run-test"
-version = "0.1.0"
-dependencies = [
- "sqlx",
- "thiserror 2.0.6",
 ]
 
 [[package]]
@@ -1300,8 +1282,25 @@ dependencies = [
 name = "sqlx-pg-test-template"
 version = "0.1.0"
 dependencies = [
- "macros",
- "run-test",
+ "sqlx-pg-test-template-macros",
+ "sqlx-pg-test-template-runner",
+]
+
+[[package]]
+name = "sqlx-pg-test-template-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "sqlx-pg-test-template-runner"
+version = "0.1.0"
+dependencies = [
+ "sqlx",
+ "thiserror 2.0.6",
 ]
 
 [[package]]
