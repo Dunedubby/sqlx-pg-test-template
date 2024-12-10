@@ -1,6 +1,9 @@
 [package]
 authors.workspace = true
+description.workspace = true
 edition.workspace = true
+homepage.workspace = true
+license.workspace = true
 name = "sqlx-pg-test-template-runner"
 repository.workspace = true
 version.workspace = true
