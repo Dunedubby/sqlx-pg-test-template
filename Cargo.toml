@@ -1,5 +1,5 @@
 [workspace]
-members = ["runner", "macros", "tests"]
+members = ["runner", "macros"]
 resolver = "2"
 
 [workspace.package]
@@ -33,6 +33,10 @@ version.workspace = true
 [dependencies]
 sqlx-pg-test-template-macros.workspace = true
 sqlx-pg-test-template-runner.workspace = true
+
+[dev-dependencies]
+sqlx = {version = ">= 0.8", features = ["migrate", "postgres", "runtime-tokio"]}
+tokio = {version = "1", features = ["full"]}
 
 [lib]
 name = "sqlx_pg_test_template"
