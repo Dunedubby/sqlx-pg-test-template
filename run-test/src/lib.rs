@@ -87,7 +87,7 @@ pub fn db_name_of_test_pool(connect_opts: &PgConnectOptions) -> Result<String, E
     connect_opts
         .get_database()
         .map(|s| s.to_string())
-        .ok_or(Error::DatabaseNotFound.into())
+        .ok_or(Error::DatabaseNotFound)
 }
 
 /// Closes test pool and drops the test database
@@ -120,15 +120,15 @@ where
 
     let template_name = &args
         .template_name
-        .map(|v| Ok(v))
+        .map(Ok)
         .unwrap_or_else(|| db_name_of_test_pool(&connect_opts))?;
 
     if connect_opts.get_database() == Some("postgres") {
-        return Err(Error::InvalidTemplate.into());
+        return Err(Error::InvalidTemplate);
     }
 
     let conn = PgConnection::connect_with(&connect_opts).await.unwrap();
-    let (db_name, conn) = create_db_from_template(conn, &template_name, &args.module_path)
+    let (db_name, conn) = create_db_from_template(conn, template_name, &args.module_path)
         .await
         .unwrap();
     conn.close().await?;
@@ -146,7 +146,7 @@ where
 }
 
 /// Runs an individual test
-pub fn run_test<F, Fut>(f: F, args: TestArgs) -> ()
+pub fn run_test<F, Fut>(f: F, args: TestArgs)
 where
     F: Fn(Pool<Postgres>) -> Fut,
     Fut: std::future::Future<Output = ()>,

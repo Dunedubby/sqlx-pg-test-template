@@ -1,34 +1,25 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use run_test::TestArgs;
 use syn::{parse::Parser, MetaNameValue};
 
 type AttributeArgs = syn::punctuated::Punctuated<syn::Meta, syn::Token![,]>;
 type Error = Box<dyn std::error::Error>;
 type Result<T> = std::result::Result<T, Error>;
 
+#[derive(Default)]
 struct Args {
     template_name: Option<String>,
     max_connections: Option<u32>,
-}
-
-impl Default for Args {
-    fn default() -> Self {
-        Self {
-            template_name: None,
-            max_connections: None,
-        }
-    }
 }
 
 /// Enables sqlx_db_test capabilities for a test
 #[proc_macro_attribute]
 pub fn test(args: TokenStream, input: TokenStream) -> TokenStream {
     let input = syn::parse_macro_input!(input as syn::ItemFn);
-    let args = args.into();
+    let args = args;
 
     match expand(args, input) {
-        Ok(ts) => ts.into(),
+        Ok(ts) => ts,
         Err(e) => {
             if let Some(parse_err) = e.downcast_ref::<syn::Error>() {
                 parse_err.to_compile_error().into()
