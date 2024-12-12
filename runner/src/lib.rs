@@ -96,7 +96,7 @@ pub async fn close_test_pool(
 
     pool.close().await;
 
-    sqlx::query(&format!("DROP DATABASE IF EXISTS {}", db_name))
+    sqlx::query(&format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", db_name))
         .execute(conn)
         .await?;
 
