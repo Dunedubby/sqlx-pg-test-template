@@ -122,7 +122,9 @@ where
         .unwrap_or_else(|| db_name_of_test_pool(&connect_opts))?;
 
     // Service connection == default database (postgres, username, etc)
-    let service_connect_opts = connect_opts.clone();//.database("");
+    let default_database_name = std::env::var("DEFAULT_DATABASE_NAME")
+        .unwrap_or("postgres");
+    let service_connect_opts = connect_opts.clone().database(default_database_name);
 
     // Create a new database from the template
     let conn = PgConnection::connect_with(&service_connect_opts)
