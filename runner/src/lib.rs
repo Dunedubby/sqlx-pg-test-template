@@ -123,8 +123,8 @@ where
 
     // Service connection == default database (postgres, username, etc)
     let default_database_name = std::env::var("DEFAULT_DATABASE_NAME")
-        .unwrap_or("postgres");
-    let service_connect_opts = connect_opts.clone().database(default_database_name);
+        .unwrap_or("postgres".to_string());
+    let service_connect_opts = connect_opts.clone().database(default_database_name.as_str());
 
     // Create a new database from the template
     let conn = PgConnection::connect_with(&service_connect_opts)
