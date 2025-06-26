@@ -1,10 +1,20 @@
 use std::hash::Hasher;
 use std::str::FromStr;
+use std::future::Future;
 
 use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
-    Connection, PgConnection, Pool, Postgres,
+    Connection,
+    PgConnection,
+    Pool,
+    Postgres,
+    Error as SqlxError,
+    __rt::sleep,
 };
+
+/// Number of retries for database creation
+const NUM_CREATE_RETRIES: usize = 20;
+const RETRY_DELAY_MS: u64 = 500;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -103,6 +113,22 @@ pub async fn close_test_pool(
     Ok(())
 }
 
+async fn retry_connect(connect_opts: &PgConnectOptions) -> Result<PgConnection, SqlxError> {
+    let mut i: usize = 0;
+    loop {
+        let result = PgConnection::connect_with(connect_opts).await;
+        if result.is_ok() {
+            return result;
+        }
+
+        sleep(std::time::Duration::from_millis(RETRY_DELAY_MS)).await;
+
+        i += 1;
+        if i >= NUM_CREATE_RETRIES {
+            return result;
+        }
+    }
+}
 /// Runs an individual test
 pub async fn wrap_run_test<F, Fut>(f: F, args: TestArgs) -> Result<(), Error>
 where
@@ -127,9 +153,7 @@ where
     let service_connect_opts = connect_opts.clone().database(default_database_name.as_str());
 
     // Create a new database from the template
-    let conn = PgConnection::connect_with(&service_connect_opts)
-        .await
-        .unwrap();
+    let conn = retry_connect(&service_connect_opts).await.unwrap();
     let (db_name, conn) = create_db_from_template(conn, template_name, &args.module_path)
         .await
         .unwrap();
