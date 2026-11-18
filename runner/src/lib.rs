@@ -1,6 +1,11 @@
-use std::hash::Hasher;
-use std::str::FromStr;
+use std::any::Any;
 use std::future::Future;
+use std::hash::Hasher;
+use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+use std::pin::Pin;
+use std::str::FromStr;
+use std::task::{Context, Poll};
+use std::time::Duration;
 
 use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -9,12 +14,26 @@ use sqlx::{
     Pool,
     Postgres,
     Error as SqlxError,
-    __rt::sleep,
+    __rt::{sleep, timeout},
 };
 
-/// Number of retries for database creation
+/// Number of retries for the service connection and for database creation
 const NUM_CREATE_RETRIES: usize = 20;
 const RETRY_DELAY_MS: u64 = 500;
+
+/// How long a test pool gets to close before its database is dropped anyway
+const CLOSE_TIMEOUT_SECS: u64 = 10;
+
+/// Default size of a test pool
+const DEFAULT_MAX_CONNECTIONS: u32 = 5;
+
+/// Advisory lock key serialising `CREATE DATABASE ... WITH TEMPLATE`. Advisory locks are scoped
+/// to the database of the session that takes them; every service connection uses the same
+/// default database, so every test process pointed at the same server shares this lock.
+const CLONE_LOCK_KEY: i64 = 0x73716c785f746d70; // "sqlx_tmp"
+
+/// SQLSTATE `object_in_use`: "source database ... is being accessed by other users"
+const OBJECT_IN_USE: &str = "55006";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -33,11 +52,43 @@ pub struct TestArgs {
     /// Template database name
     pub template_name: Option<String>,
 
-    /// Max connections for this pool (1 by default)
+    /// Max connections for this pool (5 by default)
     pub max_connections: Option<u32>,
 
     /// Test module path
     pub module_path: String,
+}
+
+fn is_template_in_use(e: &SqlxError) -> bool {
+    matches!(e, SqlxError::Database(db) if db.code().as_deref() == Some(OBJECT_IN_USE))
+}
+
+/// Clones the template, retrying while another session is connected to it. Postgres refuses to
+/// copy a database that has any other session in it (a background worker counts), and only waits
+/// five seconds for that session to leave.
+async fn clone_template(
+    conn: &mut PgConnection,
+    db_name: &str,
+    template_db_name: &str,
+) -> Result<(), SqlxError> {
+    let mut i: usize = 0;
+    loop {
+        let result = sqlx::query(&format!(
+            "CREATE DATABASE {} WITH TEMPLATE {}",
+            db_name, template_db_name
+        ))
+        .execute(&mut *conn)
+        .await;
+
+        match result {
+            Ok(_) => return Ok(()),
+            Err(e) if is_template_in_use(&e) && i + 1 < NUM_CREATE_RETRIES => {
+                i += 1;
+                sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// Creates a new database from a template
@@ -52,16 +103,28 @@ pub async fn create_db_from_template(
 
     let db_name = format!("_sqlx_{}", id);
 
-    sqlx::query(&format!("DROP DATABASE IF EXISTS {}", db_name))
+    // A database left behind by an aborted run can still have sessions in it
+    sqlx::query(&format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", db_name))
         .execute(&mut conn)
         .await?;
 
-    sqlx::query(&format!(
-        "CREATE DATABASE {} WITH TEMPLATE {}",
-        db_name, template_db_name
-    ))
-    .execute(&mut conn)
-    .await?;
+    // One clone of the template at a time, across threads and processes. The lock is held for
+    // the copy only; the test itself runs on its own database, in parallel with the others.
+    // If this connection dies, the server releases the lock with the session.
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(CLONE_LOCK_KEY)
+        .execute(&mut conn)
+        .await?;
+
+    let cloned = clone_template(&mut conn, &db_name, template_db_name).await;
+
+    let unlocked = sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(CLONE_LOCK_KEY)
+        .execute(&mut conn)
+        .await;
+
+    cloned?;
+    unlocked?;
 
     sqlx::query(&format!(
         "COMMENT ON DATABASE {} IS '{}'",
@@ -81,8 +144,8 @@ pub async fn spawn_test_pool(
 ) -> Result<Pool<Postgres>, Error> {
     let connect_options = connect_options.clone().database(db_name);
     let pool = PgPoolOptions::new()
-        .max_connections(max_connections.unwrap_or(2))
-        .idle_timeout(Some(std::time::Duration::from_secs(1)))
+        .max_connections(max_connections.unwrap_or(DEFAULT_MAX_CONNECTIONS))
+        .idle_timeout(Some(Duration::from_secs(1)))
         .connect_with(connect_options)
         .await?;
 
@@ -104,7 +167,14 @@ pub async fn close_test_pool(
 ) -> Result<(), Error> {
     let db_name = db_name_of_test_pool(&pool.connect_options())?;
 
-    pool.close().await;
+    // `close()` waits for every connection to come back. A test that leaked one (a spawned task
+    // still holding it, say) must not hang the run: the drop below is forced either way.
+    let close_timed_out = timeout(Duration::from_secs(CLOSE_TIMEOUT_SECS), pool.close())
+        .await
+        .is_err();
+    if close_timed_out {
+        eprintln!("test database {db_name}: pool still held after the test, dropping it anyway");
+    }
 
     sqlx::query(&format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", db_name))
         .execute(conn)
@@ -121,7 +191,7 @@ async fn retry_connect(connect_opts: &PgConnectOptions) -> Result<PgConnection, 
             return result;
         }
 
-        sleep(std::time::Duration::from_millis(RETRY_DELAY_MS)).await;
+        sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
 
         i += 1;
         if i >= NUM_CREATE_RETRIES {
@@ -129,6 +199,34 @@ async fn retry_connect(connect_opts: &PgConnectOptions) -> Result<PgConnection, 
         }
     }
 }
+
+/// Resolves to the future's output, or to the payload of a panic raised while polling it
+struct CatchUnwind<Fut>(Pin<Box<Fut>>);
+
+impl<Fut: Future> Future for CatchUnwind<Fut> {
+    type Output = Result<Fut::Output, Box<dyn Any + Send>>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match catch_unwind(AssertUnwindSafe(|| self.0.as_mut().poll(cx))) {
+            Ok(Poll::Pending) => Poll::Pending,
+            Ok(Poll::Ready(output)) => Poll::Ready(Ok(output)),
+            Err(panic) => Poll::Ready(Err(panic)),
+        }
+    }
+}
+
+/// Closes the pool and drops the test database over a fresh service connection
+async fn drop_test_db(
+    service_connect_opts: &PgConnectOptions,
+    pool: &Pool<Postgres>,
+) -> Result<(), Error> {
+    let mut conn = retry_connect(service_connect_opts).await?;
+    close_test_pool(&mut conn, pool).await?;
+    conn.close().await?;
+
+    Ok(())
+}
+
 /// Runs an individual test
 pub async fn wrap_run_test<F, Fut>(f: F, args: TestArgs) -> Result<(), Error>
 where
@@ -153,23 +251,28 @@ where
     let service_connect_opts = connect_opts.clone().database(default_database_name.as_str());
 
     // Create a new database from the template
-    let conn = retry_connect(&service_connect_opts).await.unwrap();
-    let (db_name, conn) = create_db_from_template(conn, template_name, &args.module_path)
-        .await
-        .unwrap();
+    let conn = retry_connect(&service_connect_opts).await?;
+    let (db_name, conn) = create_db_from_template(conn, template_name, &args.module_path).await?;
     conn.close().await?;
 
-    // Run test
+    // Run test. A panic is held until the database is gone, then raised again, so a failing
+    // test cleans up after itself exactly like a passing one.
     let pool = spawn_test_pool(&service_connect_opts, &db_name, args.max_connections).await?;
 
-    f(pool.clone()).await;
+    let outcome = CatchUnwind(Box::pin(f(pool.clone()))).await;
 
     // Close the pool & drop the test database
-    let mut conn = PgConnection::connect_with(&service_connect_opts).await?;
-    close_test_pool(&mut conn, &pool).await.unwrap();
-    conn.close().await?;
+    let dropped = drop_test_db(&service_connect_opts, &pool).await;
 
-    Ok(())
+    match outcome {
+        Ok(()) => dropped,
+        Err(panic) => {
+            if let Err(e) = dropped {
+                eprintln!("test database {db_name} was not dropped: {e}");
+            }
+            resume_unwind(panic)
+        }
+    }
 }
 
 /// Runs an individual test
