@@ -65,20 +65,25 @@ fn is_template_in_use(e: &SqlxError) -> bool {
 
 /// Clones the template, retrying while another session is connected to it. Postgres refuses to
 /// copy a database that has any other session in it (a background worker counts), and only waits
-/// five seconds for that session to leave.
+/// five seconds for that session to leave. On a TimescaleDB template the clone races the
+/// scheduler that TimescaleDB restarts for it, and loses now and then even when clones are serial.
 async fn clone_template(
     conn: &mut PgConnection,
     db_name: &str,
     template_db_name: &str,
 ) -> Result<(), SqlxError> {
+    let create = format!(
+        "CREATE DATABASE {} WITH TEMPLATE {}",
+        db_name, template_db_name
+    );
+
     let mut i: usize = 0;
     loop {
-        let result = sqlx::query(&format!(
-            "CREATE DATABASE {} WITH TEMPLATE {}",
-            db_name, template_db_name
-        ))
-        .execute(&mut *conn)
-        .await;
+        // Sent as a simple query on purpose. `sqlx::query` caches a prepared statement per
+        // connection, and a retry of a cached statement skips parse analysis. TimescaleDB stops
+        // its background scheduler on the template from a parse-analysis hook, so a cached retry
+        // would leave that scheduler connected and be refused every time.
+        let result = sqlx::raw_sql(&create).execute(&mut *conn).await;
 
         match result {
             Ok(_) => return Ok(()),
