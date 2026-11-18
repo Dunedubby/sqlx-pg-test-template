@@ -35,6 +35,9 @@ const CLONE_LOCK_KEY: i64 = 0x73716c785f746d70; // "sqlx_tmp"
 /// SQLSTATE `object_in_use`: "source database ... is being accessed by other users"
 const OBJECT_IN_USE: &str = "55006";
 
+/// SQLSTATE `insufficient_privilege`: "permission denied to terminate process"
+const INSUFFICIENT_PRIVILEGE: &str = "42501";
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("DATABASE_URL is missing or invalid")]
@@ -61,6 +64,35 @@ pub struct TestArgs {
 
 fn is_template_in_use(e: &SqlxError) -> bool {
     matches!(e, SqlxError::Database(db) if db.code().as_deref() == Some(OBJECT_IN_USE))
+}
+
+/// A forced drop terminates every session in the database, and fails if one of them belongs to
+/// a role this one may not signal. TimescaleDB's scheduler is such a session: it is told to stop
+/// when the drop is analysed, but may still be exiting when the drop looks.
+fn is_session_still_leaving(e: &SqlxError) -> bool {
+    matches!(
+        e,
+        SqlxError::Database(db)
+            if matches!(db.code().as_deref(), Some(OBJECT_IN_USE) | Some(INSUFFICIENT_PRIVILEGE))
+    )
+}
+
+/// Drops a database and every session in it, retrying while a session is on its way out. Sent as
+/// a simple query for the same reason as the clone below.
+async fn drop_database(conn: &mut PgConnection, db_name: &str) -> Result<(), SqlxError> {
+    let drop = format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", db_name);
+
+    let mut i: usize = 0;
+    loop {
+        match sqlx::raw_sql(&drop).execute(&mut *conn).await {
+            Ok(_) => return Ok(()),
+            Err(e) if is_session_still_leaving(&e) && i + 1 < NUM_CREATE_RETRIES => {
+                i += 1;
+                sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// Clones the template, retrying while another session is connected to it. Postgres refuses to
@@ -109,9 +141,7 @@ pub async fn create_db_from_template(
     let db_name = format!("_sqlx_{}", id);
 
     // A database left behind by an aborted run can still have sessions in it
-    sqlx::query(&format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", db_name))
-        .execute(&mut conn)
-        .await?;
+    drop_database(&mut conn, &db_name).await?;
 
     // One clone of the template at a time, across threads and processes. The lock is held for
     // the copy only; the test itself runs on its own database, in parallel with the others.
@@ -181,9 +211,7 @@ pub async fn close_test_pool(
         eprintln!("test database {db_name}: pool still held after the test, dropping it anyway");
     }
 
-    sqlx::query(&format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", db_name))
-        .execute(conn)
-        .await?;
+    drop_database(conn, &db_name).await?;
 
     Ok(())
 }
